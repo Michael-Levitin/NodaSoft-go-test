@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+const (
+	timeRun  = 3000  // total run in milliseconds
+	coolDown = 150   // task processing "cool down" in milliseconds > 0
+	timeout  = 20000 // task timeout in milliseconds
+)
+
 // ЗАДАНИЕ:
 // * сделать из плохого кода хороший;
 // * важно сохранить логику появления ошибочных тасков;
@@ -14,91 +20,93 @@ import (
 // приложение эмулирует получение и обработку тасков, пытается и получать и обрабатывать в многопоточном режиме
 // В конце должно выводить успешные таски и ошибки выполнены остальных тасков
 
-// A Ttype represents a meaninglessness of our life
-type Ttype struct {
-	id         int
-	cT         string // время создания
-	fT         string // время выполнения
-	taskRESULT []byte
+// A tType represents a meaninglessness of our life
+type tType struct {
+	id         int64
+	startTime  string // время создания
+	endTime    string // время завершения
+	taskError  error
+	taskResult []byte
 }
 
 func main() {
-	taskCreturer := func(a chan Ttype) {
-		go func() {
-			for {
-				ft := time.Now().Format(time.RFC3339)
-				if time.Now().Nanosecond()%2 > 0 { // вот такое условие появления ошибочных тасков
-					ft = "Some error occured"
-				}
-				a <- Ttype{cT: ft, id: int(time.Now().Unix())} // передаем таск на выполнение
+
+	taskCreater := func(a chan tType) {
+		var err error
+		var startTime string
+		var timeTemp time.Time
+		for {
+			err = nil
+			//timeTemp = time.Now().UnixNano()
+			timeTemp = time.Now()
+			startTime = timeTemp.Format(time.RFC3339Nano)
+			if timeTemp.UnixNano()%2 > 0 { // вот такое условие появления ошибочных тасков
+				err = fmt.Errorf("task creation failed")
 			}
-		}()
+			a <- tType{id: timeTemp.UnixNano(), startTime: startTime, taskError: err} // передаем таск на выполнение
+		}
 	}
 
-	superChan := make(chan Ttype, 10)
-
-	go taskCreturer(superChan)
-
-	task_worker := func(a Ttype) Ttype {
-		tt, _ := time.Parse(time.RFC3339, a.cT)
-		if tt.After(time.Now().Add(-20 * time.Second)) {
-			a.taskRESULT = []byte("task has been successed")
+	taskWorker := func(a tType) tType {
+		if a.taskError != nil {
+			a.taskResult = []byte("task is erroneous")
 		} else {
-			a.taskRESULT = []byte("something went wrong")
+			tt, _ := time.Parse(time.RFC3339Nano, a.startTime)
+
+			if tt.After(time.Now().Add(-time.Millisecond * timeout)) {
+				a.taskResult = []byte("task has been completed successfully")
+			} else {
+				a.taskError = fmt.Errorf("timeout failure")
+				a.taskResult = []byte("task failed to execute")
+			}
 		}
-		a.fT = time.Now().Format(time.RFC3339Nano)
 
-		time.Sleep(time.Millisecond * 150)
-
+		time.Sleep(time.Millisecond * coolDown)
+		a.endTime = time.Now().Format(time.RFC3339Nano)
 		return a
 	}
 
-	doneTasks := make(chan Ttype)
-	undoneTasks := make(chan error)
-
-	tasksorter := func(t Ttype) {
-		if string(t.taskRESULT[14:]) == "successed" {
+	taskSorter := func(t tType, doneTasks, undoneTasks chan tType) {
+		if t.taskError == nil {
 			doneTasks <- t
 		} else {
-			undoneTasks <- fmt.Errorf("Task id %d time %s, error %s", t.id, t.cT, t.taskRESULT)
+			undoneTasks <- t
 		}
 	}
 
+	superChan := make(chan tType, 10)
+	defer close(superChan)
+	go taskCreater(superChan)
+
+	doneTasks := make(chan tType)
+	undoneTasks := make(chan tType)
+	defer close(doneTasks)
+	defer close(undoneTasks)
 	go func() {
-		// получение тасков
 		for t := range superChan {
-			t = task_worker(t)
-			go tasksorter(t)
+			t = taskWorker(t)
+			taskSorter(t, doneTasks, undoneTasks)
 		}
-		close(superChan)
 	}()
 
-	result := map[int]Ttype{}
-	err := []error{}
+	var result []int64
 	go func() {
 		for r := range doneTasks {
-			go func() {
-				result[r.id] = r
-			}()
+			result = append(result, r.id)
 		}
-		for r := range undoneTasks {
-			go func() {
-				err = append(err, r)
-			}()
-		}
-		close(doneTasks)
-		close(undoneTasks)
 	}()
 
-	time.Sleep(time.Second * 3)
+	var err []string
+	go func() {
+		for r := range undoneTasks {
+			err = append(err, fmt.Sprintf("Task id: %d, start time: %s, error: %s\n", r.id, r.startTime, r.taskError))
+		}
+	}()
 
-	println("Errors:")
-	for r := range err {
-		println(r)
-	}
+	time.Sleep(time.Millisecond * timeRun)
 
-	println("Done tasks:")
-	for r := range result {
-		println(r)
-	}
+	fmt.Println("Finished processing tasks")
+	fmt.Printf("Summary - Done tasks: %v, Errors: %v\n", len(result), len(err))
+	fmt.Printf("Done tasks:\n %v\n\n", result)
+	fmt.Printf("Errors:\n %v\n", err)
 }
